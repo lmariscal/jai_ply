@@ -1,7 +1,12 @@
 #import "Basic";
 #import "Compiler";
+#import "File";
 #import "String";
 #import "Flat_Pool";
+
+// Only allocating 4kb by default, as this only contains elements and property names,
+// comments, and other metadata. The actual data is allocated separately.
+#module_parameters (DEFAULT_MEMORY_POOL_SIZE := 4 * 1024);
 
 #scope_module
 
@@ -13,7 +18,7 @@ Ply_Format :: enum {
 }
 
 Ply_Property_Type :: enum u8 #specified {
-    UNKNOWN :: 0; // 1 | s8
+    UNKNOWN :: 0; //
     CHAR    :: 1; // 1 | s8
     UCHAR   :: 2; // 1 | u8
     SHORT   :: 3; // 2 | s16
@@ -58,10 +63,35 @@ size_of_property_type :: (type: Ply_Property_Type) -> u32 {
     }
 }
 
+next_token :: (str: string, cursor: *s64, is_new_line: *bool) -> string {
+    result: string = ---;
+    result.data = str.data + <<cursor;
+
+    for <<cursor..str.count {
+        if str[it] == {
+            case #char " "; {
+                result.count = it - <<cursor;
+                break;
+            }
+            case #char "\n"; {
+                result.count = it - <<cursor;
+                break;
+            }
+        }
+    }
+
+    <<cursor += result.count + 1;
+    <<is_new_line = str[<<cursor - 1] == #char "\n";
+    return result;
+}
+
 allocate_for_elements :: (result: *Ply_Data) {
+    default_allocator :: Allocator.{runtime_support_default_allocator_proc, null};
+
     for *e: result.elements {
-        if e.stride == 0xFFFFFFFFFFFFFFFF {
-            e.data = cast(*u8) get(*result.mem_pool, cast(s64)(size_of(u64) * e.size));
+        if e.stride == ~cast(u64)0 {
+            e.data = cast(*u8) alloc(cast(s64)(size_of(u64) * e.count),, default_allocator);
+            log("allocated %mb for % elements, list", (cast(s64)(size_of(u64) * e.count)) / 1024 / 1024, e.count);
             continue;
         }
 
@@ -69,36 +99,41 @@ allocate_for_elements :: (result: *Ply_Data) {
             p_size := size_of_property_type(p.type);
             e.stride += p_size;
         }
-        e.data = cast(*u8) get(*result.mem_pool, cast(s64)(e.stride * e.size));
+        e.data = cast(*u8) alloc(cast(s64)(e.stride * e.count),, default_allocator);
+        log("allocated %mb for % elements", (cast(s64)(e.stride * e.count)) / 1024 / 1024, e.count);
     }
 }
 
 parse_header :: (data_str: string, result: *Ply_Data) -> format: Ply_Format = .UNKNOWN, ok: bool = true {
-    lines := split(data_str, "\n");
     format: Ply_Format = .UNKNOWN;
 
-    if lines[0] != "ply" {
+    cursor: s64 = 0;
+    is_new_line: bool = false;
+    token := next_token(data_str, *cursor, *is_new_line);
+    if token != "ply" || !is_new_line {
         log_error("Invalid ply data");
         return ok = false;
     }
 
     has_end_header := false;
-    for 1..cast(u32)lines.count-1 {
-        tokens := split(lines[it], " ");
-
-        if tokens[0] == {
+    token = next_token(data_str, *cursor, *is_new_line);
+    while cursor <= data_str.count {
+        if token == {
             case "comment"; {
-                array_add(*result.comments, join(..array_view(tokens, 1), " "));
-            }
-            case "element"; {
-                element: Ply_Element = .{
-                    name = tokens[1],
-                    size = string_to_int(tokens[2], T = u64),
-                };
-                array_add(*result.elements, element);
+                count := 0;
+                for cursor..data_str.count {
+                    if data_str[it] == #char "\n" {
+                        count = it - cursor;
+                        break;
+                    }
+                }
+
+                comment: string = copy_string(slice(data_str, cursor, count));
+                cursor += count + 1;
+                array_add(*result.comments, comment);
             }
             case "format"; {
-                if tokens[1] == {
+                if next_token(data_str, *cursor, *is_new_line) == {
                     case "ascii"; {
                         format = .ASCII;
                     }
@@ -108,33 +143,51 @@ parse_header :: (data_str: string, result: *Ply_Data) -> format: Ply_Format = .U
                     case "binary_big_endian"; {
                         format = .BINARY_BIG_ENDIAN;
                     }
+                    case; {
+                        log_error("Invalid format: %", format);
+                        return ok = false;
+                    }
                 }
+
+                _version := next_token(data_str, *cursor, *is_new_line);
+            }
+            case "element"; {
+                element: Ply_Element = .{
+                    name = copy_string(next_token(data_str, *cursor, *is_new_line)),
+                    count = string_to_int(next_token(data_str, *cursor, *is_new_line), T = u64),
+                };
+                array_add(*result.elements, element);
             }
             case "property"; {
                 parent := peek_pointer(result.elements);
                 if parent == null {
-                    log_error("Invalid property declaration, line: %", it);
+                    log_error("Invalid property declaration, type %, property: %",
+                        next_token(data_str, *cursor, *is_new_line),
+                        next_token(data_str, *cursor, *is_new_line));
                     return ok = false;
                 }
 
-                if tokens[1] != "list" {
+                type_token := next_token(data_str, *cursor, *is_new_line);
+                if type_token != "list" {
                     property: Ply_Property = .{
-                        name = tokens[2],
-                        type = str_to_property_type(tokens[1]),
+                        type = str_to_property_type(type_token),
+                        name = copy_string(next_token(data_str, *cursor, *is_new_line)),
                     };
 
                     if property.type == .UNKNOWN {
-                        log_error("Invalid property type: %, line %", tokens[1], it);
+                        log_error("Invalid property type: %", property.name);
                         return ok = false;
                     }
 
                     array_add(*parent.properties, property);
                 } else {
+                    _list_count_type := next_token(data_str, *cursor, *is_new_line);
+
                     property: Ply_Property = .{
-                        name = tokens[4],
-                        type = str_to_property_type(tokens[3]),
+                        type = str_to_property_type(next_token(data_str, *cursor, *is_new_line)),
+                        name = copy_string(next_token(data_str, *cursor, *is_new_line)),
                     };
-                    parent.stride = 0xFFFFFFFFFFFFFFFF;
+                    parent.stride = ~cast(u64)0; // denotes list
                 }
             }
             case "end_header"; {
@@ -142,14 +195,16 @@ parse_header :: (data_str: string, result: *Ply_Data) -> format: Ply_Format = .U
                 break;
             }
             case; {
-                log_error("Invalid header line: %", it);
+                log_error("Invalid header token: %", token);
                 return ok = false;
             }
         }
+
+        token = next_token(data_str, *cursor, *is_new_line);
     }
 
     if !has_end_header {
-        log_error("Invalid ply header, doesn't contain `end_header`");
+        log_error("Invalid ply header, doesn't contain `end_header` 2");
         return ok = false;
     }
 
@@ -161,11 +216,12 @@ parse_body_ascii :: (body: [] u8, result: *Ply_Data) -> ok: bool = true {
     body_str.data = body.data;
     body_str.count = ifx body[body.count-1] == #char "\n" then body.count - 1 else body.count;
 
-    lines := split(body_str, "\n");
-    for lines {
-        tokens := split(it, " ");
-        log("%", tokens);
-    }
+    log("body: %", body_str);
+    // lines := split(body_str, "\n");
+    // for lines {
+    //     tokens := split(it, " ");
+    //     // log("%", tokens);
+    // }
 
     return ok = true;
 }
@@ -183,7 +239,7 @@ Ply_Element :: struct {
     name: string;
     properties: [..] Ply_Property;
     data: *u8 = null;
-    size: u64 = 0;
+    count: u64 = 0;
     stride: u64 = 0; // 0xFFFFFFFFFFFFFFFF signifies list
 }
 
@@ -192,8 +248,9 @@ Ply_Property :: struct {
     type: Ply_Property_Type;
 }
 
-ply_from_buffer :: (data: [..] u8) -> result: Ply_Data = .{}, ok: bool = true {
+ply_from_buffer :: (data: [] u8) -> result: Ply_Data = .{}, ok: bool = true {
     result: Ply_Data;
+    init(*result.mem_pool, DEFAULT_MEMORY_POOL_SIZE);
 
     new_context := context;
     allocator: Allocator;
@@ -203,9 +260,6 @@ ply_from_buffer :: (data: [..] u8) -> result: Ply_Data = .{}, ok: bool = true {
 
     push_context new_context {
         END_HEADER_STR :: "\nend_header\n";
-        END_HEADER_LEN :: #insert #run () -> string {
-            return tprint("%;", END_HEADER_STR.count);
-        }();
 
         data_str: string = ---;
         data_str.data = data.data;
@@ -213,11 +267,11 @@ ply_from_buffer :: (data: [..] u8) -> result: Ply_Data = .{}, ok: bool = true {
 
         end_header_index := find_index_from_left(data_str, END_HEADER_STR);
         if end_header_index == -1 {
-            log_error("Invalid ply data, doesn't contain `end_header`");
+            log_error("Invalid ply data, doesn't contain `end_header` 1");
             return ok = false;
         }
 
-        header := slice(data_str, 0, end_header_index + END_HEADER_LEN);
+        header := slice(data_str, 0, end_header_index + END_HEADER_STR.count);
         format, ok := parse_header(header, *result);
         if !ok {
             return ok = false;
@@ -225,24 +279,26 @@ ply_from_buffer :: (data: [..] u8) -> result: Ply_Data = .{}, ok: bool = true {
 
         allocate_for_elements(*result);
 
-        body := array_view(
-            data, end_header_index + END_HEADER_LEN,
-            data.count - end_header_index - END_HEADER_LEN);
+        log("format: %", format);
 
-        if format == .ASCII {
-            ok := parse_body_ascii(body, *result);
-            if !ok {
-                log_error("Failed to parse body");
-                return ok = false;
-            }
-        }
+        body := array_view(
+            data, end_header_index + END_HEADER_STR.count,
+            data.count - end_header_index - END_HEADER_STR.count);
+
+        // if format == .ASCII {
+        //     ok := parse_body_ascii(body, *result);
+        //     if !ok {
+        //         log_error("Failed to parse body");
+        //         return ok = false;
+        //     }
+        // }
     }
 
     return result, ok = true;
 }
 
 ply_from_str :: inline (data: string) -> result: Ply_Data = .{}, ok: bool = true {
-    buffer: [..] u8;
+    buffer: [] u8 = ---;
     buffer.data = data.data;
     buffer.count = data.count;
 
@@ -250,14 +306,27 @@ ply_from_str :: inline (data: string) -> result: Ply_Data = .{}, ok: bool = true
 }
 
 ply_from_file :: (path: string) -> result: Ply_Data = .{}, ok: bool = true {
-    file_data, ok := read_entire_file(path);
+    file, ok := file_open(path);
     if !ok {
-        log_error("Failed to read file: %", path);
-        return false;
+        log_error("Failed to open file: %", path);
+        return ok = false;
     }
-    defer free(file);
+    defer file_close(*file);
 
-    return ply_from_str(file_data);
+    length := file_length(file);
+    buffer := cast(*u8) alloc(length);
+    defer free(buffer);
+
+    success := file_read(file, buffer, length);
+    if !success {
+        log_error("Failed to read file: %", path);
+        return ok = false;
+    }
+
+    buffer_view: [] u8 = ---;
+    buffer_view.data = buffer;
+    buffer_view.count = length;
+    return ply_from_buffer(buffer_view);
 }
 
 // get_property(element: Ply_Element, property_name: string) -> $T, bool;
@@ -267,5 +336,9 @@ ply_from_file :: (path: string) -> result: Ply_Data = .{}, ok: bool = true {
 // get_element(data: Ply_Data, element: string) -> PlyElement, bool;
 
 release :: (using ply_data: Ply_Data) {
+    for *e: elements {
+        free(e.data);
+    }
+
     fini(*mem_pool);
 }

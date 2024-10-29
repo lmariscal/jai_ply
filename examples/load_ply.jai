@@ -30,13 +30,18 @@ end_header
 END
 
 main :: () {
-    data, ok := ply_from_str(TEST_DATA);
+    // data, ok := ply_from_str(TEST_DATA);
+    // data, ok := ply_from_file("./lucy.ply");
+    data, ok := ply_from_file("./cube_ascii.ply");
     if !ok {
         log_error("Failed to load ply data");
         exit(1);
     }
 
     log("data:\n%", data);
+    log("size of mem pool: %mb", (data.mem_pool.address_limit - data.mem_pool.memory_base) / 1024 / 1024);
+    log("size of mem pool: %kb", (data.mem_pool.address_limit - data.mem_pool.memory_base) / 1024);
+    log("size of mem pool: %b", (data.mem_pool.address_limit - data.mem_pool.memory_base));
 
     release(data);
 }
