@@ -110,7 +110,6 @@ next_token :: (str: string, cursor: *s64) -> string {
 allocate_for_elements :: (result: *Ply_Data) {
     for *e: result.elements {
         if e.stride == ~cast(u64)0 {
-            e.data = cast(*u8) alloc(cast(s64)(size_of(u64) * e.count * 2),, default_allocator);
             continue;
         }
 
@@ -275,19 +274,18 @@ elements_data_to_little_endian :: (result: *Ply_Data) {
 
     }
 
+    log("before byte swap");
     for *e : result.elements {
         if e.stride == ~cast(u64)0 {
+            p: *Ply_Property = *e.properties[0];
+            cursor := 0;
             for c : 0..e.count-1 {
-                // list_size: u8 = <<cast(*u8)(e.data + (size_of(s64) * c * 2));
-                // for 0..list_size-1 {
-                //     for *p : e.properties {
-                //         total_offset := e.stride * c + p.offset;
-                //
-                //         byte_swap_in_place(p.type, e.data + total_offset);
-                //     }
-                // }
-                // list_size: u8 = <<cast(*u8)(e.data + (size_of(s64) * c * 2) + size_of(s64));
-                // log("list_size: %", list_size);
+                list_size: u8 = <<cast(*u8)(e.data + cursor);
+                cursor += size_of(u8);
+                for 0..list_size-1 {
+                    byte_swap_in_place(p.type, e.data + cursor);
+                    cursor += size_of_property_type(p.type);
+                }
             }
         } else {
             for c : 0..e.count-1 {
@@ -299,6 +297,7 @@ elements_data_to_little_endian :: (result: *Ply_Data) {
             }
         }
     }
+    log("after byte swap");
 }
 
 parse_body_binary :: (body: [] u8, result: *Ply_Data) -> ok: bool = true {
@@ -306,17 +305,14 @@ parse_body_binary :: (body: [] u8, result: *Ply_Data) -> ok: bool = true {
     for *e : result.elements {
         if e.stride == ~cast(u64)0 {
             p: *Ply_Property = *e.properties[0];
+            start_cursor := cursor;
             for c : 0..e.count-1 {
                 list_size: u8 = <<cast(*u8)(body.data + cursor);
-                cursor += size_of(u8);
-                buffer := cast(*u8) alloc(cast(s64)(size_of_property_type(p.type) * list_size),, default_allocator);
-                memcpy(buffer, body.data + cursor, size_of_property_type(p.type) * list_size);
-                cursor += size_of_property_type(p.type) * list_size;
-
-                offset := (size_of(s64) * c * 2);
-                memcpy(e.data + offset, *buffer, size_of(*u8));
-                memcpy(e.data + offset + size_of(s64), *list_size, size_of(*u8));
+                cursor += size_of(u8) + (size_of_property_type(p.type) * list_size);
             }
+
+            e.data = cast(*u8) alloc((cursor - start_cursor),, default_allocator);
+            memcpy(e.data, body.data + start_cursor, (cursor - start_cursor));
         } else {
             chunk_size: u64 = 0;
             for *p: e.properties {
@@ -379,19 +375,34 @@ parse_body_ascii :: (body: [] u8, result: *Ply_Data) -> ok: bool = true {
     for *e : result.elements {
         if e.stride == ~cast(u64)0 {
             p: *Ply_Property = *e.properties[0];
+            start_cursor := cursor;
+            total_size: s64 = 0;
+
             for c : 0..e.count-1{
                 list_size_token := next_token(body_str, *cursor);
-                list_size: s64 = xx string_to_int(list_size_token, T = u8);
+                list_size: u8 = string_to_int(list_size_token, T = u8);
+                total_size += size_of(u8) + (size_of_property_type(p.type) * list_size);
 
-                buffer := cast(*u8) alloc(cast(s64)(size_of_property_type(p.type) * list_size),, default_allocator);
+                for 0..list_size-1 {
+                    next_token(body_str, *cursor);
+                }
+            }
+
+            e.data = cast(*u8) alloc(total_size,, default_allocator);
+            cursor = start_cursor;
+            offset: s64 = 0;
+            for c : 0..e.count-1{
+                list_size_token := next_token(body_str, *cursor);
+                list_size: u8 = string_to_int(list_size_token, T = u8);
+
+                memcpy(e.data + offset, *list_size, size_of(u8));
+                offset += size_of(u8);
+
                 for 0..list_size-1 {
                     token := next_token(body_str, *cursor);
-                    memcpy_to_data(p.type, token, buffer + (size_of_property_type(p.type) * it));
+                    memcpy_to_data(p.type, token, e.data + offset);
+                    offset += size_of_property_type(p.type);
                 }
-
-                offset := (size_of(s64) * c * 2);
-                memcpy(e.data + offset, *buffer, size_of(*u8));
-                memcpy(e.data + offset + size_of(s64), *list_size, size_of(*u8));
             }
         } else {
             total_stride: u64 = 0;
@@ -573,12 +584,13 @@ get_list_property :: (using element: Ply_Element, property_name: string, $T: Typ
     }
 
     buffer := cast(*u8) alloc(cast(s64)(size_of([] T) * count),, temp);
-    log("size: %", cast(s64)(size_of([] T)));
+    cursor: s64 = 0;
     for 0..count-1 {
         view: *[] T = xx (buffer + (size_of([] T) * it));
-        offset := (size_of(s64) * it * 2);
-        memcpy(*view.data, element.data + offset, size_of(*u8));
-        memcpy(*view.count, element.data + offset + size_of(s64), size_of(s64));
+        view.count = <<cast(*u8)(element.data + cursor);
+        cursor += size_of(u8);
+        view.data = cast(*T) (element.data + cursor);
+        cursor += size_of_property_type(p.type) * view.count;
     }
 
     result: [][] T = ---;
@@ -587,7 +599,6 @@ get_list_property :: (using element: Ply_Element, property_name: string, $T: Typ
 
     return result = result;
 }
-
 
 get_element :: (data: Ply_Data, element: string) -> result: Ply_Element = .{}, ok: bool = true {
     for data.elements {
@@ -601,13 +612,6 @@ get_element :: (data: Ply_Data, element: string) -> result: Ply_Element = .{}, o
 
 release :: (using ply_data: Ply_Data) {
     for *e: elements {
-        if e.stride == ~cast(u64)0 {
-            for 0..e.count-1 {
-                buffer: *u8;
-                memcpy(*buffer, e.data + (size_of(s64) * it * 2), size_of(*u8));
-                free(buffer,, default_allocator);
-            }
-        }
         free(e.data);
     }
 
