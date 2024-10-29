@@ -277,7 +277,18 @@ elements_data_to_little_endian :: (result: *Ply_Data) {
 
     for *e : result.elements {
         if e.stride == ~cast(u64)0 {
-            // @TODO
+            for c : 0..e.count-1 {
+                // list_size: u8 = <<cast(*u8)(e.data + (size_of(s64) * c * 2));
+                // for 0..list_size-1 {
+                //     for *p : e.properties {
+                //         total_offset := e.stride * c + p.offset;
+                //
+                //         byte_swap_in_place(p.type, e.data + total_offset);
+                //     }
+                // }
+                // list_size: u8 = <<cast(*u8)(e.data + (size_of(s64) * c * 2) + size_of(s64));
+                // log("list_size: %", list_size);
+            }
         } else {
             for c : 0..e.count-1 {
                 for *p : e.properties {
@@ -292,18 +303,26 @@ elements_data_to_little_endian :: (result: *Ply_Data) {
 
 parse_body_binary :: (body: [] u8, result: *Ply_Data) -> ok: bool = true {
     cursor: s64 = 0;
-
     for *e : result.elements {
-        log("element: % %", e.name, cursor);
         if e.stride == ~cast(u64)0 {
-            // @TODO
+            p: *Ply_Property = *e.properties[0];
+            for c : 0..e.count-1 {
+                list_size: u8 = <<cast(*u8)(body.data + cursor);
+                cursor += size_of(u8);
+                buffer := cast(*u8) alloc(cast(s64)(size_of_property_type(p.type) * list_size),, default_allocator);
+                memcpy(buffer, body.data + cursor, size_of_property_type(p.type) * list_size);
+                cursor += size_of_property_type(p.type) * list_size;
+
+                offset := (size_of(s64) * c * 2);
+                memcpy(e.data + offset, *buffer, size_of(*u8));
+                memcpy(e.data + offset + size_of(s64), *list_size, size_of(*u8));
+            }
         } else {
             chunk_size: u64 = 0;
             for *p: e.properties {
                 chunk_size += size_of_property_type(p.type);
             }
             chunk_size *= e.count;
-            log("chunk_size: %", chunk_size);
             memcpy(e.data, body.data + cursor, xx chunk_size);
 
             cursor += xx chunk_size;
