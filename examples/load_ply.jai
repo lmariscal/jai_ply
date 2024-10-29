@@ -1,4 +1,4 @@
-#import "Basic";
+#import "Basic"()(MEMORY_DEBUGGER=true);
 #import,dir "../";
 
 TEST_DATA := #string END
@@ -34,8 +34,8 @@ main :: () {
     // data, ok := ply_from_file("./lucy.ply");
     // data, ok := ply_from_file("./cube_ascii.ply");
     // data, ok := ply_from_file("./cube_bin.ply");
-    // data, ok := ply_from_file("./dragon_vrip.ply");
-    data, ok := ply_from_file("./lego.ply");
+    data, ok := ply_from_file("./dragon_vrip.ply");
+    // data, ok := ply_from_file("./lego.ply");
     if !ok {
         log_error("Failed to load ply data");
         exit(1);
@@ -62,6 +62,20 @@ main :: () {
     }
 
     log("vertex_y: %", vertex_y);
+
+    face, ok= := get_element(data, "face");
+    if !ok {
+        log_error("Failed to get face element");
+        exit(1);
+    }
+
+    faces, ok= := get_list_property(face, "vertex_indices", u32);
+    if !ok {
+        log_error("Failed to get vertex_index property");
+        exit(1);
+    }
+
+    log("faces: %", faces);
 
     release(data);
 }
