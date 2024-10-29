@@ -5,9 +5,9 @@
 #import "Bit_Operations";
 #import "Flat_Pool";
 
-// Only allocating 4kb by default, as this only contains elements and property names,
+// Only allocating 32kb by default, as this only contains elements, properties, strings,
 // comments, and other metadata. The actual data is allocated separately.
-#module_parameters (DEFAULT_MEMORY_POOL_SIZE := 4 * 1024);
+#module_parameters (DEFAULT_MEMORY_POOL_SIZE := 32 * 1024);
 
 #scope_module
 
@@ -110,7 +110,6 @@ allocate_for_elements :: (result: *Ply_Data) {
     for *e: result.elements {
         if e.stride == ~cast(u64)0 {
             e.data = cast(*u8) alloc(cast(s64)(size_of(u64) * e.count),, default_allocator);
-            // log("allocated %b for % elements, list", (cast(s64)(size_of(u64) * e.count)), e.count);
             continue;
         }
 
@@ -120,7 +119,6 @@ allocate_for_elements :: (result: *Ply_Data) {
             e.stride += p_size;
         }
         e.data = cast(*u8) alloc(cast(s64)(e.stride * e.count),, default_allocator);
-        // log("allocated %b for % elements", (cast(s64)(e.stride * e.count)), e.count);
     }
 }
 
