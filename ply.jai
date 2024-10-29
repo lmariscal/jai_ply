@@ -2,6 +2,7 @@
 #import "Compiler";
 #import "File";
 #import "String";
+#import "Bit_Operations";
 #import "Flat_Pool";
 
 // Only allocating 4kb by default, as this only contains elements and property names,
@@ -16,7 +17,6 @@ Ply_Format :: enum {
     BINARY_LITTLE_ENDIAN;
     BINARY_BIG_ENDIAN;
 }
-
 Ply_Property_Type :: enum u8 #specified {
     UNKNOWN :: 0; //
     CHAR    :: 1; // 1 | s8
@@ -63,11 +63,21 @@ size_of_property_type :: (type: Ply_Property_Type) -> u32 {
     }
 }
 
-next_token :: (str: string, cursor: *s64, is_new_line: *bool) -> string {
+ascii :: (num: u8) -> string #expand {
+    return .{1, *num};
+}
+
+next_token :: (str: string, cursor: *s64) -> string {
     result: string = ---;
     result.data = str.data + <<cursor;
+    result.count = 0;
 
-    for <<cursor..str.count {
+    if <<cursor >= str.count {
+        <<cursor += 1;
+        return result;
+    }
+
+    for (<<cursor)..(str.count-1) {
         if str[it] == {
             case #char " "; {
                 result.count = it - <<cursor;
@@ -80,8 +90,17 @@ next_token :: (str: string, cursor: *s64, is_new_line: *bool) -> string {
         }
     }
 
+    if result.count == 0 {
+        result.count = str.count - <<cursor;
+    }
+
     <<cursor += result.count + 1;
-    <<is_new_line = str[<<cursor - 1] == #char "\n";
+    if <<cursor < str.count {
+        while str[<<cursor] == #char " " || str[<<cursor] == #char "\n" {
+            <<cursor += 1;
+        }
+    }
+
     return result;
 }
 
@@ -91,16 +110,17 @@ allocate_for_elements :: (result: *Ply_Data) {
     for *e: result.elements {
         if e.stride == ~cast(u64)0 {
             e.data = cast(*u8) alloc(cast(s64)(size_of(u64) * e.count),, default_allocator);
-            log("allocated %mb for % elements, list", (cast(s64)(size_of(u64) * e.count)) / 1024 / 1024, e.count);
+            // log("allocated %b for % elements, list", (cast(s64)(size_of(u64) * e.count)), e.count);
             continue;
         }
 
         for *p: e.properties {
             p_size := size_of_property_type(p.type);
+            p.offset = e.stride;
             e.stride += p_size;
         }
         e.data = cast(*u8) alloc(cast(s64)(e.stride * e.count),, default_allocator);
-        log("allocated %mb for % elements", (cast(s64)(e.stride * e.count)) / 1024 / 1024, e.count);
+        // log("allocated %b for % elements", (cast(s64)(e.stride * e.count)), e.count);
     }
 }
 
@@ -108,15 +128,14 @@ parse_header :: (data_str: string, result: *Ply_Data) -> format: Ply_Format = .U
     format: Ply_Format = .UNKNOWN;
 
     cursor: s64 = 0;
-    is_new_line: bool = false;
-    token := next_token(data_str, *cursor, *is_new_line);
-    if token != "ply" || !is_new_line {
+    token := next_token(data_str, *cursor);
+    if token != "ply" {
         log_error("Invalid ply data");
         return ok = false;
     }
 
     has_end_header := false;
-    token = next_token(data_str, *cursor, *is_new_line);
+    token = next_token(data_str, *cursor);
     while cursor <= data_str.count {
         if token == {
             case "comment"; {
@@ -133,7 +152,7 @@ parse_header :: (data_str: string, result: *Ply_Data) -> format: Ply_Format = .U
                 array_add(*result.comments, comment);
             }
             case "format"; {
-                if next_token(data_str, *cursor, *is_new_line) == {
+                if next_token(data_str, *cursor) == {
                     case "ascii"; {
                         format = .ASCII;
                     }
@@ -149,12 +168,12 @@ parse_header :: (data_str: string, result: *Ply_Data) -> format: Ply_Format = .U
                     }
                 }
 
-                _version := next_token(data_str, *cursor, *is_new_line);
+                _version := next_token(data_str, *cursor);
             }
             case "element"; {
                 element: Ply_Element = .{
-                    name = copy_string(next_token(data_str, *cursor, *is_new_line)),
-                    count = string_to_int(next_token(data_str, *cursor, *is_new_line), T = u64),
+                    name = copy_string(next_token(data_str, *cursor)),
+                    count = string_to_int(next_token(data_str, *cursor), T = u64),
                 };
                 array_add(*result.elements, element);
             }
@@ -162,16 +181,16 @@ parse_header :: (data_str: string, result: *Ply_Data) -> format: Ply_Format = .U
                 parent := peek_pointer(result.elements);
                 if parent == null {
                     log_error("Invalid property declaration, type %, property: %",
-                        next_token(data_str, *cursor, *is_new_line),
-                        next_token(data_str, *cursor, *is_new_line));
+                        next_token(data_str, *cursor),
+                        next_token(data_str, *cursor));
                     return ok = false;
                 }
 
-                type_token := next_token(data_str, *cursor, *is_new_line);
+                type_token := next_token(data_str, *cursor);
                 if type_token != "list" {
                     property: Ply_Property = .{
                         type = str_to_property_type(type_token),
-                        name = copy_string(next_token(data_str, *cursor, *is_new_line)),
+                        name = copy_string(next_token(data_str, *cursor)),
                     };
 
                     if property.type == .UNKNOWN {
@@ -181,11 +200,11 @@ parse_header :: (data_str: string, result: *Ply_Data) -> format: Ply_Format = .U
 
                     array_add(*parent.properties, property);
                 } else {
-                    _list_count_type := next_token(data_str, *cursor, *is_new_line);
+                    _list_count_type := next_token(data_str, *cursor);
 
                     property: Ply_Property = .{
-                        type = str_to_property_type(next_token(data_str, *cursor, *is_new_line)),
-                        name = copy_string(next_token(data_str, *cursor, *is_new_line)),
+                        type = str_to_property_type(next_token(data_str, *cursor)),
+                        name = copy_string(next_token(data_str, *cursor)),
                     };
                     parent.stride = ~cast(u64)0; // denotes list
                 }
@@ -200,7 +219,7 @@ parse_header :: (data_str: string, result: *Ply_Data) -> format: Ply_Format = .U
             }
         }
 
-        token = next_token(data_str, *cursor, *is_new_line);
+        token = next_token(data_str, *cursor);
     }
 
     if !has_end_header {
@@ -211,17 +230,143 @@ parse_header :: (data_str: string, result: *Ply_Data) -> format: Ply_Format = .U
     return format, ok = true;
 }
 
+elements_data_to_little_endian :: (result: *Ply_Data) {
+    byte_swap_in_place :: (type: Ply_Property_Type, location: *u8) {
+        if type == {
+            case .CHAR; {
+                value: *s8 = cast(*s8)(location);
+                byte_swap_in_place(value);
+            }
+            case .UCHAR; {
+                value: *u8 = cast(*u8)(location);
+                byte_swap_in_place(value);
+            }
+            case .SHORT; {
+                value: *s16 = cast(*s16)(location);
+                byte_swap_in_place(value);
+            }
+            case .USHORT; {
+                value: *u16 = cast(*u16)(location);
+                byte_swap_in_place(value);
+            }
+            case .INT; {
+                value: *s32 = cast(*s32)(location);
+                byte_swap_in_place(value);
+            }
+            case .UINT; {
+                value: *u32 = cast(*u32)(location);
+                byte_swap_in_place(value);
+            }
+            case .FLOAT; {
+                value: *float32 = cast(*float32)(location);
+                byte_swap_in_place(value);
+            }
+            case .DOUBLE; {
+                value: *float64 = cast(*float64)(location);
+                byte_swap_in_place(value);
+            }
+        }
+
+    }
+
+    for *e : result.elements {
+        if e.stride == ~cast(u64)0 {
+            // @TODO
+        } else {
+            for c : 0..e.count-1 {
+                for *p : e.properties {
+                    total_offset := e.stride * c + p.offset;
+
+                    byte_swap_in_place(p.type, e.data + total_offset);
+                }
+            }
+        }
+    }
+}
+
+parse_body_binary :: (body: [] u8, result: *Ply_Data) -> ok: bool = true {
+    cursor: s64 = 0;
+
+    for *e : result.elements {
+        log("element: % %", e.name, cursor);
+        if e.stride == ~cast(u64)0 {
+            // @TODO
+        } else {
+            chunk_size: u64 = 0;
+            for *p: e.properties {
+                chunk_size += size_of_property_type(p.type);
+            }
+            chunk_size *= e.count;
+            log("chunk_size: %", chunk_size);
+            memcpy(e.data, body.data + cursor, xx chunk_size);
+
+            cursor += xx chunk_size;
+        }
+    }
+
+    return ok = true;
+}
+
 parse_body_ascii :: (body: [] u8, result: *Ply_Data) -> ok: bool = true {
+    memcpy_to_data :: (type: Ply_Property_Type, token: string, location: *u8) {
+        if type == {
+            case .CHAR; {
+                v := string_to_int(token, T = s8);
+                memcpy(location, *v, size_of(s8));
+            }
+            case .UCHAR; {
+                v := string_to_int(token, T = u8);
+                memcpy(location, *v, size_of(u8));
+            }
+            case .SHORT; {
+                v := string_to_int(token, T = s16);
+                memcpy(location, *v, size_of(s16));
+            }
+            case .USHORT; {
+                v := string_to_int(token, T = u16);
+                memcpy(location, *v, size_of(u16));
+            }
+            case .INT; {
+                v := string_to_int(token, T = s32);
+                memcpy(location, *v, size_of(s32));
+            }
+            case .UINT; {
+                v := string_to_int(token, T = u32);
+                memcpy(location, *v, size_of(u32));
+            }
+            case .FLOAT; {
+                v := string_to_float(token);
+                memcpy(location, *v, size_of(float32));
+            }
+            case .DOUBLE; {
+                v := string_to_float64(token);
+                memcpy(location, *v, size_of(float64));
+            }
+        }
+    }
+
     body_str: string = ---;
     body_str.data = body.data;
     body_str.count = ifx body[body.count-1] == #char "\n" then body.count - 1 else body.count;
 
-    log("body: %", body_str);
-    // lines := split(body_str, "\n");
-    // for lines {
-    //     tokens := split(it, " ");
-    //     // log("%", tokens);
-    // }
+    cursor: s64 = 0;
+
+    for *e : result.elements {
+        if e.stride == ~cast(u64)0 {
+            // @TODO
+        } else {
+            total_stride: u64 = 0;
+            for c : 0..e.count-1 {
+                for *p : e.properties {
+                    token := next_token(body_str, *cursor);
+                    total_offset := total_stride + p.offset;
+
+                    memcpy_to_data(p.type, token, e.data + total_offset);
+                }
+                total_stride += e.stride;
+            }
+        }
+    }
 
     return ok = true;
 }
@@ -246,6 +391,7 @@ Ply_Element :: struct {
 Ply_Property :: struct {
     name: string;
     type: Ply_Property_Type;
+    offset: u64 = 0;
 }
 
 ply_from_buffer :: (data: [] u8) -> result: Ply_Data = .{}, ok: bool = true {
@@ -285,13 +431,31 @@ ply_from_buffer :: (data: [] u8) -> result: Ply_Data = .{}, ok: bool = true {
             data, end_header_index + END_HEADER_STR.count,
             data.count - end_header_index - END_HEADER_STR.count);
 
-        // if format == .ASCII {
-        //     ok := parse_body_ascii(body, *result);
-        //     if !ok {
-        //         log_error("Failed to parse body");
-        //         return ok = false;
-        //     }
-        // }
+        if format == {
+            case .ASCII; {
+                ok := parse_body_ascii(body, *result);
+                if !ok {
+                    log_error("Failed to parse body");
+                    return ok = false;
+                }
+            }
+            case .BINARY_LITTLE_ENDIAN; {
+                ok := parse_body_binary(body, *result);
+                if !ok {
+                    log_error("Failed to parse body");
+                    return ok = false;
+                }
+            }
+            case .BINARY_BIG_ENDIAN; {
+                ok := parse_body_binary(body, *result);
+                if !ok {
+                    log_error("Failed to parse body");
+                    return ok = false;
+                }
+
+                elements_data_to_little_endian(*result);
+            }
+        }
     }
 
     return result, ok = true;
@@ -329,14 +493,51 @@ ply_from_file :: (path: string) -> result: Ply_Data = .{}, ok: bool = true {
     return ply_from_buffer(buffer_view);
 }
 
-// get_property(element: Ply_Element, property_name: string) -> $T, bool;
-//
+// @temp makes use of the temp allocator
+get_property :: (using element: Ply_Element, property_name: string, $T: Type) -> result: [] T = .{}, ok: bool = true {
+    p: Ply_Property;
+    for element.properties {
+        if it.name == property_name {
+            p = it;
+            break;
+        }
+    }
+    if p.name != property_name {
+        log_error("Failed to find property: %", property_name);
+        return ok = false;
+    }
+
+    result: [] T = ---;
+    result.data = xx alloc(cast(s64)(size_of(T) * count),, temp);
+    result.count = xx count;
+
+    for 0..count-1 {
+        total_offset := p.offset + (stride * it);
+        value: *T = xx (element.data + total_offset);
+        memcpy(result.data + it, value, size_of(T));
+    }
+
+    return result = result;
+}
+
 // get_list_property(element: Ply_Element, property_name: string) -> [..] $T, bool;
 //
-// get_element(data: Ply_Data, element: string) -> PlyElement, bool;
+
+get_element :: (data: Ply_Data, element: string) -> result: Ply_Element = .{}, ok: bool = true {
+    for data.elements {
+        if it.name == element {
+            return result = it;
+        }
+    }
+
+    return ok = false;
+}
 
 release :: (using ply_data: Ply_Data) {
     for *e: elements {
+        // if e.stride == ~cast(u64)0 {
+        //     for 0..
+        // }
         free(e.data);
     }
 

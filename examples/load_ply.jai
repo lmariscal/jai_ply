@@ -32,7 +32,9 @@ END
 main :: () {
     // data, ok := ply_from_str(TEST_DATA);
     // data, ok := ply_from_file("./lucy.ply");
-    data, ok := ply_from_file("./cube_ascii.ply");
+    // data, ok := ply_from_file("./cube_ascii.ply");
+    // data, ok := ply_from_file("./cube_bin.ply");
+    data, ok := ply_from_file("./dragon_vrip.ply");
     if !ok {
         log_error("Failed to load ply data");
         exit(1);
@@ -42,6 +44,20 @@ main :: () {
     log("size of mem pool: %mb", (data.mem_pool.address_limit - data.mem_pool.memory_base) / 1024 / 1024);
     log("size of mem pool: %kb", (data.mem_pool.address_limit - data.mem_pool.memory_base) / 1024);
     log("size of mem pool: %b", (data.mem_pool.address_limit - data.mem_pool.memory_base));
+
+    vertex, ok= := get_element(data, "vertex");
+    if !ok {
+        log_error("Failed to get vertex element");
+        exit(1);
+    }
+
+    vertex_y, ok= := get_property(vertex, "x", float32);
+    if !ok {
+        log_error("Failed to get y property");
+        exit(1);
+    }
+
+    log("vertex_y: %", vertex_y);
 
     release(data);
 }
