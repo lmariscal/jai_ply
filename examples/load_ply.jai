@@ -13,7 +13,7 @@ property float z
 element face 6
 property list uchar int vertex_index
 end_header
-0 0 0
+0 3 0
 0 0 1
 0 1 1
 0 1 0
@@ -36,7 +36,7 @@ main :: () {
         exit(1);
     }
 
-    print("loaded!");
+    log("data:\n%", data);
 
     release(data);
 }

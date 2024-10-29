@@ -58,6 +58,21 @@ size_of_property_type :: (type: Ply_Property_Type) -> u32 {
     }
 }
 
+allocate_for_elements :: (result: *Ply_Data) {
+    for *e: result.elements {
+        if e.stride == 0xFFFFFFFFFFFFFFFF {
+            e.data = cast(*u8) get(*result.mem_pool, cast(s64)(size_of(u64) * e.size));
+            continue;
+        }
+
+        for *p: e.properties {
+            p_size := size_of_property_type(p.type);
+            e.stride += p_size;
+        }
+        e.data = cast(*u8) get(*result.mem_pool, cast(s64)(e.stride * e.size));
+    }
+}
+
 parse_header :: (data_str: string, result: *Ply_Data) -> format: Ply_Format = .UNKNOWN, ok: bool = true {
     lines := split(data_str, "\n");
     format: Ply_Format = .UNKNOWN;
@@ -78,7 +93,7 @@ parse_header :: (data_str: string, result: *Ply_Data) -> format: Ply_Format = .U
             case "element"; {
                 element: Ply_Element = .{
                     name = tokens[1],
-                    size = xx string_to_int(tokens[2]),
+                    size = string_to_int(tokens[2], T = u64),
                 };
                 array_add(*result.elements, element);
             }
@@ -141,19 +156,18 @@ parse_header :: (data_str: string, result: *Ply_Data) -> format: Ply_Format = .U
     return format, ok = true;
 }
 
-allocate_for_elements :: (result: *Ply_Data) {
-    for *e: result.elements {
-        if e.stride == 0xFFFFFFFFFFFFFFFF {
-            e.data = cast(*u8) get(*result.mem_pool, cast(s64)(size_of(u64) * e.size));
-            continue;
-        }
+parse_body_ascii :: (body: [] u8, result: *Ply_Data) -> ok: bool = true {
+    body_str: string = ---;
+    body_str.data = body.data;
+    body_str.count = ifx body[body.count-1] == #char "\n" then body.count - 1 else body.count;
 
-        for *p: e.properties {
-            p_size := size_of_property_type(p.type);
-            e.stride += p_size;
-        }
-        e.data = cast(*u8) get(*result.mem_pool, cast(s64)(e.stride * e.size));
+    lines := split(body_str, "\n");
+    for lines {
+        tokens := split(it, " ");
+        log("%", tokens);
     }
+
+    return ok = true;
 }
 
 #scope_export
@@ -210,19 +224,21 @@ ply_from_buffer :: (data: [..] u8) -> result: Ply_Data = .{}, ok: bool = true {
         }
 
         allocate_for_elements(*result);
-        // body := array_view(
-        //     data, end_header_index + END_HEADER_LEN,
-        //     data.count - end_header_index - END_HEADER_LEN);
-        //
-        // test_str: string = ---;
-        // test_str.data = body.data;
-        // test_str.count = body.count;
-        // log("\n\n\n\nbody:\n%", test_str);
+
+        body := array_view(
+            data, end_header_index + END_HEADER_LEN,
+            data.count - end_header_index - END_HEADER_LEN);
+
+        if format == .ASCII {
+            ok := parse_body_ascii(body, *result);
+            if !ok {
+                log_error("Failed to parse body");
+                return ok = false;
+            }
+        }
     }
 
-    log("%", result);
-
-    return ok = true;
+    return result, ok = true;
 }
 
 ply_from_str :: inline (data: string) -> result: Ply_Data = .{}, ok: bool = true {
