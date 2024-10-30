@@ -5,6 +5,9 @@
 #import "Bit_Operations";
 #import "Flat_Pool";
 
+// @limitation Quite fast, but it doesn't support lists inside elements with other properties.
+// It only supports one list property per element.
+
 // Only allocating 32kb by default, as this only contains elements, properties, strings,
 // comments, and other metadata. The actual data is allocated separately.
 #module_parameters (DEFAULT_MEMORY_POOL_SIZE := 32 * 1024);
@@ -274,7 +277,6 @@ elements_data_to_little_endian :: (result: *Ply_Data) {
 
     }
 
-    log("before byte swap");
     for *e : result.elements {
         if e.stride == ~cast(u64)0 {
             p: *Ply_Property = *e.properties[0];
@@ -297,7 +299,6 @@ elements_data_to_little_endian :: (result: *Ply_Data) {
             }
         }
     }
-    log("after byte swap");
 }
 
 parse_body_binary :: (body: [] u8, result: *Ply_Data) -> ok: bool = true {
@@ -475,8 +476,6 @@ ply_from_buffer :: (data: [] u8) -> result: Ply_Data = .{}, ok: bool = true {
 
         allocate_for_elements(*result);
 
-        log("format: %", format);
-
         body := array_view(
             data, end_header_index + END_HEADER_STR.count,
             data.count - end_header_index - END_HEADER_STR.count);
@@ -570,6 +569,7 @@ get_property :: (using element: Ply_Element, property_name: string, $T: Type) ->
     return result = result;
 }
 
+// @temp makes use of the temp allocator
 get_list_property :: (using element: Ply_Element, property_name: string, $T: Type) -> result: [][] T = .{}, ok: bool = true {
     p: Ply_Property;
     for element.properties {
